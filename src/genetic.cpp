@@ -1,6 +1,7 @@
 #include "genetic.h"
 #include <queue>
 #include <vector>
+#include <pthread.h>
 
 namespace genetic {
 

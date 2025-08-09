@@ -1,0 +1,3 @@
+[submodule "ext/pthreads4w-code"]
+	path = ext/pthreads4w-code
+	url = https://git.code.sf.net/p/pthreads4w/code
