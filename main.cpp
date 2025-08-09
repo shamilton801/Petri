@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <cassert>
-#include <cfloat>
 #include <cstdlib>
 #include <iostream>
 #include <vector>
@@ -30,7 +29,7 @@ struct Cell {
 Cell make_cell(int num_params) {
   Cell res = {num_params, (float *)malloc(num_params * sizeof(float))};
   for (int i = 0; i < num_params; i++) {
-    res.params[i] = norm_rand() * 100.0f;
+    res.params[i] = 0;
   }
   return res;
 }
@@ -73,18 +72,18 @@ bool operator<(const Cell &a, const Cell &b) {
 void combine_cells(const Cell &a, const Cell &b, Cell *child) {
   bool a_first = norm_rand() > 0.5f;
   for (int i = 0; i < a.n; i++) {
-	float offset = norm_rand();
-	float roll = norm_rand();
+    float offset = norm_rand() * 10;
+    float roll = norm_rand();
     if (a_first) {
-      child->params[i] = (i < a.n / 2 ? a.params[i] : b.params[i]) + (roll > 0.5 ? offset : -offset);
+      child->params[i] = (i < a.n / 2 ? a.params[i] : b.params[i]) +
+                         (roll > 0.5 ? offset : -offset);
     } else {
-      child->params[i] = (i < a.n / 2 ? b.params[i] : a.params[i]) + (roll > 0.5 ? offset : -offset);
+      child->params[i] = (i < a.n / 2 ? b.params[i] : a.params[i]) +
+                         (roll > 0.5 ? offset : -offset);
     }
   }
-  if (norm_rand() < MUTATION_CHANCE) {
-    float r = norm_rand();
-    child->params[(int)r * (a.n-1)] = r * FLT_MAX;
-  }
+  float r = norm_rand();
+  child->params[(int)r * (a.n - 1)] = r * 100.0;
 }
 
 int main(int argc, char **argv) {
@@ -116,12 +115,19 @@ int main(int argc, char **argv) {
       combine_cells(cells[j], cells[j + 1], &cells[num_cells / 2 + j]);
     }
     if (i % 1000 == 0) {
-      std::cout << i << "\t" << get_cell_err(cells[0])+get_cell_err(cells[1])+get_cell_err(cells[2]) << std::endl;
+      std::cout << i << "\t" << get_cell_err(cells[0]) << std::endl;
     }
   }
   std::cout << "Final Answer: ";
+  float sum = 0;
+  float product = 1;
   for (int i = 0; i < cells[0].n; i++) {
-	std::cout << cells[0].params[i] << " ";
+    std::cout << cells[0].params[i] << " ";
+    sum += cells[0].params[i];
+    product *= cells[0].params[i];
   }
   std::cout << std::endl;
+
+  std::cout << "Sum: " << sum << std::endl;
+  std::cout << "Product: " << product << std::endl;
 }
