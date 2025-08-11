@@ -1,6 +1,5 @@
 #include "genetic.h"
 #include "pthread.h"
-#include <algorithm>
 #include <queue>
 #include <vector>
 
@@ -17,6 +16,11 @@ template <class T> struct WorkEntry {
   float &score;
 };
 
+template <class T> struct WorkQueue {
+  std::vector<WorkEntry<T>> jobs;
+  int i;
+};
+
 static pthread_mutex_t data_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_mutex_t ready_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -28,7 +32,7 @@ static pthread_cond_t gen_complete_cond = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t run_complete_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t run_complete_cond = PTHREAD_COND_INITIALIZER;
 
-/*  Thoughts on this approach
+/* Thoughts on this approach
  * The ideal implementation of a worker thread has them operating at maximum
  * load with as little synchronization overhead as possible. i.e. The ideal
  * worker thread
@@ -61,13 +65,13 @@ static pthread_cond_t run_complete_cond = PTHREAD_COND_INITIALIZER;
  *
  * I take a hybrid approach. Users can specify a "batch size". Worker threads
  * will bite off jobs in chunks and complete them before locking
- * the job pool again. The user to choose a batch size close to 1 if
- * their fitness function compute time is highly variable, and closer to
+ * the job pool to grab another chunk. The user should choose a batch size close
+ * to 1 if their fitness function compute time is highly variable and closer to
  * num_cells / num_threads if computation time is consistent. Users should
  * experiment with a batch size that works well for their problem.
  *
- * Worth mentioning this optimization work is irrelevant once computation time
- * >>> synchronization time.
+ * Worth mentioning this avoiding synchronization is irrelevant once computation
+ * time >>> synchronization time.
  *
  * There might be room for dynamic batch size modification, but I don't expect
  * to pursue this feature until the library is more mature (and I've run out of

@@ -3,7 +3,7 @@ obj_files = $(src_files:src/%.cpp=obj/%.o)
 
 
 ifeq ($(OS),Windows_NT)
-    CCFLAGS += -D WIN32 -Iext/PTHREADS-BUILT/include
+    CCFLAGS += -D WIN32 -Iext/PTHREADS-BUILT/include -std=c++20
     PTHREADLIB = ext/PTHREADS-BUILT/lib/pthreadVCE3.lib
     ifeq ($(PROCESSOR_ARCHITEW6432),AMD64)
         CCFLAGS += -D AMD64
