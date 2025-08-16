@@ -30,25 +30,21 @@ template <class T> struct Strategy {
   bool enable_mutation;            // Cells may be mutated
                                    // before fitness evaluation
   float mutation_chance; // Chance to mutate cells before fitness evaluation
+  uint64_t rand_seed;
+  bool higher_fitness_is_better; // Sets whether or not to consider higher
+                                 // fitness values better or worse. Set this to
+                                 // false if fitness is an error function.
 
   // User defined functions
   T (*make_default_cell)();
   void (*mutate)(T &cell_to_modify);
-  void (*crossover)(const ReadonlySpan<T> &parents,
-                    const Span<T> &out_children);
+  void (*crossover)(const Span<T *> parents, const Span<T *> out_children);
   float (*fitness)(const T &cell);
 };
 
 template <class T> struct Stats {
   std::vector<T> best_cell;
   std::vector<float> average_fitness;
-};
-
-template <class T> struct ReadonlySpan {
-  T *_data;
-  int len;
-
-  const T &operator[](int i);
 };
 
 template <class T> struct Span {

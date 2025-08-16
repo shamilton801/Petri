@@ -21,17 +21,17 @@ namespace genetic {
 
 template <class T> struct CellEntry {
   float score;
-  T cell;
+  T *cell;
+  bool stale;
 };
 
 template <class T> struct CrossoverJob {
-  const ReadonlySpan<T> &parents;
-  const Span<T> &children_out;
+  Span<CellEntry<T> *> &parents;
+  Span<CellEntry<T> *> &children_out;
 };
 
 template <class T> struct FitnessJob {
-  const T &cell;
-  float &result_out;
+  CellEntry<T> *cell_entry;
 };
 
 template <class T> struct WorkQueue {
@@ -100,6 +100,8 @@ template <class T> struct WorkerThreadArgs {
   bool *stop_flag;
 };
 
+template <class T> void do_crossover_job(CrossoverJob<T> cj) {}
+
 template <class T> void *worker(void *args) {
   WorkerThreadArgs<T> *work_args = (WorkerThreadArgs<T> *)args;
   Strategy<T> &strat = work_args->strat;
@@ -107,7 +109,10 @@ template <class T> void *worker(void *args) {
   bool *stop_flag = work_args->stop_flag;
 
   auto JobDispatcher = overload{
-      [strat](FitnessJob<T> fj) { fj.result_out = strat.fitness(fj.cell); },
+      [strat](FitnessJob<T> fj) {
+        fj.cell_entry->result_out = strat.fitness(*(fj.cell_entry->cell));
+        fj.cell_entry->stale = true;
+      },
       [strat](CrossoverJob<T> cj) {
         strat.crossover(cj.parents, cj.children_out);
       },
@@ -131,21 +136,20 @@ template <class T> void *worker(void *args) {
 
 template <class T> Stats<T> run(Strategy<T> strat) {
   Stats<T> stats;
-  WorkQueue<T> queue = make_work_queue<T>(strat.num_cells);
+  WorkQueue<T> work_queue = make_work_queue<T>(strat.num_cells);
 
-  vector<CellEntry<T>> cells_a, cells_b;
+  T cells[strat.num_cells];
+
+  // Using a vector so I can use the make_heap, push_heap, etc.
+  vector<CellEntry<T>> cell_queue;
   for (int i = 0; i < strat.num_cells; i++) {
-    T cell = strat.make_default_cell();
-    cells_a.push_back({0, cell, true});
-    cells_b.push_back({0, cell, true});
+    cells[i] = strat.make_default_cell();
+    cell_queue.push_back({0, &cells[i], true});
   }
-
-  std::vector<CellEntry<T>> &cur_cells = cells_a;
-  std::vector<CellEntry<T>> &next_cells = cells_b;
 
   bool stop_flag = false;
   WorkerThreadArgs<T> args = {
-      .strat = strat, .queue = queue, .stop_flag = &stop_flag};
+      .strat = strat, .queue = work_queue, .stop_flag = &stop_flag};
 
   // spawn worker threads
   pthread_t threads[strat.num_threads];
@@ -155,20 +159,27 @@ template <class T> Stats<T> run(Strategy<T> strat) {
 
   for (int i = 0; i < strat.num_generations; i++) {
     // generate fitness jobs
+    if (strat.test_all) {
+
+    } else {
+    }
+
     // wait for fitness jobs to complete
     // sort cells on performance
     // generate crossover jobs
-    cur_cells = cur_cells == cells_a ? cells_b : cells_a;
-    next_cells = cur_cells == cells_a ? cells_b : cells_a;
   }
 
   // stop worker threads
   stop_flag = true;
-  pthread_cond_broadcast(queue.jobs_available_cond);
+  pthread_cond_broadcast(work_queue.jobs_available_cond);
   for (int i = 0; i < strat.num_threads; i++) {
     pthread_join(threads[i], NULL);
   }
+}
 
+template <class T> T &Span<T>::operator[](int i) {
+  assert(i >= 0 && i < len);
+  return _data[i];
 }
 
 } // namespace genetic
