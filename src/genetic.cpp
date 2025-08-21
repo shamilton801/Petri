@@ -1,8 +1,13 @@
-#include "genetic.h"
-#include "pthread.h"
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
 #include <optional>
 #include <variant>
 #include <vector>
+
+#include "genetic.h"
+#include "pthread.h"
+#include "rand.h"
 
 #define NUM_QUEUE_RETRIES 10
 
@@ -19,23 +24,27 @@ template <class... Ts> overload(Ts...) -> overload<Ts...>;
 
 namespace genetic {
 
-template <class T> struct CellEntry {
+template <class T> struct cell_entry {
   float score;
   T *cell;
   bool stale;
 };
 
-template <class T> struct CrossoverJob {
-  Span<CellEntry<T> *> &parents;
-  Span<CellEntry<T> *> &children_out;
+template <class T> struct crossover_job {
+  Array<cell_entry<T> *> &parents;
+  Array<cell_entry<T> *> &children_out;
 };
 
-template <class T> struct FitnessJob {
-  CellEntry<T> *cell_entry;
+template <class T> struct fitness_job {
+  cell_entry<T> *cell_entry;
 };
 
-template <class T> struct WorkQueue {
-  variant<CrossoverJob<T>, FitnessJob<T>> *jobs;
+template <class T> struct mutate_job {
+  cell_entry<T> *cell_entry;
+};
+
+template <class T> struct work_queue {
+  variant<crossover_job<T>, fitness_job<T>, mutate_job<T>> *jobs;
   int len;
   int read_i;
   int write_i;
@@ -49,9 +58,9 @@ template <class T> struct WorkQueue {
   pthread_cond_t jobs_available_cond;
 };
 
-template <class T> WorkQueue<T> make_work_queue(int len) {
-  return {.jobs = (variant<FitnessJob<T>, CrossoverJob<T>> *)malloc(
-              sizeof(variant<FitnessJob<T>, CrossoverJob<T>>) * len),
+template <class T> work_queue<T> make_work_queue(int len) {
+  return {.jobs = (variant<fitness_job<T>, crossover_job<T>> *)malloc(
+              sizeof(variant<fitness_job<T>, crossover_job<T>>) * len),
           .len = len,
           .read_i = 0,
           .write_i = 0,
@@ -63,19 +72,19 @@ template <class T> WorkQueue<T> make_work_queue(int len) {
           .jobs_available_cond = PTHREAD_COND_INITIALIZER};
 }
 
-template <class T> struct JobBatch {
-  ReadonlySpan<variant<CrossoverJob<T>, FitnessJob<T>>> jobs;
+template <class T> struct job_batch {
+  Array<variant<crossover_job<T>, fitness_job<T>>> jobs;
   bool gen_complete;
 };
 
 template <class T>
-optional<JobBatch<T>> get_job_batch(WorkQueue<T> &queue, int batch_size,
-                                    bool *stop_flag) {
+optional<job_batch<T>> get_job_batch(work_queue<T> &queue, int batch_size,
+                                     bool *stop_flag) {
   while (true) {
     for (int i = 0; i < NUM_QUEUE_RETRIES; i++) {
       if (queue.read_i < queue.write_i &&
           pthread_mutex_trylock(&queue.data_mutex)) {
-        JobBatch<T> res;
+        job_batch<T> res;
         res.jobs._data = &queue._jobs[queue.read_i];
         int span_size = min(batch_size, queue.write_i - queue.read_i);
         res.jobs.len = span_size;
@@ -94,27 +103,41 @@ optional<JobBatch<T>> get_job_batch(WorkQueue<T> &queue, int batch_size,
   }
 }
 
-template <class T> struct WorkerThreadArgs {
+template <class T> struct worker_thread_args {
   Strategy<T> &strat;
-  WorkQueue<T> &queue;
+  work_queue<T> &queue;
   bool *stop_flag;
 };
 
-template <class T> void do_crossover_job(CrossoverJob<T> cj) {}
-
 template <class T> void *worker(void *args) {
-  WorkerThreadArgs<T> *work_args = (WorkerThreadArgs<T> *)args;
+  worker_thread_args<T> *work_args = (worker_thread_args<T> *)args;
   Strategy<T> &strat = work_args->strat;
-  WorkQueue<T> &queue = work_args->queue;
+  work_queue<T> &queue = work_args->queue;
   bool *stop_flag = work_args->stop_flag;
 
-  auto JobDispatcher = overload{
-      [strat](FitnessJob<T> fj) {
-        fj.cell_entry->result_out = strat.fitness(*(fj.cell_entry->cell));
-        fj.cell_entry->stale = true;
+  auto job_dispatcher = overload{
+      [strat](mutate_job<T> mj) {
+        strat.mutate(*mj.cell_entry->cell);
+        mj.cell_entry->stale = true;
       },
-      [strat](CrossoverJob<T> cj) {
-        strat.crossover(cj.parents, cj.children_out);
+      [strat](fitness_job<T> fj) {
+        fj.cell_entry->score = strat.fitness(*fj.cell_entry->cell);
+        fj.cell_entry->stale = false;
+      },
+      [strat](crossover_job<T> cj) {
+        Array<T *> parent_cells, child_cells;
+        parent_cells = {(T **)malloc(sizeof(T *) * cj.parents.len),
+                        cj.parents.len};
+        child_cells = {(T **)malloc(sizeof(T *) * cj.children_out.len),
+                       cj.children_out.len};
+        for (int i = 0; i < cj.parents.len; i++) {
+          parent_cells[i] = cj.parents[i].cell;
+        }
+        for (int i = 0; i < cj.children_out.len; i++) {
+          child_cells[i] = cj.children_out[i].cell;
+          cj.children_out[i].stale = true;
+        }
+        strat.crossover(parent_cells, child_cells);
       },
   };
 
@@ -125,7 +148,7 @@ template <class T> void *worker(void *args) {
 
     // Do the actual work
     for (int i = 0; i < batch->jobs.len; i++) {
-      visit(JobDispatcher, batch->jobs[i]);
+      visit(job_dispatcher, batch->jobs[i]);
     }
 
     if (batch->gen_complete) {
@@ -136,20 +159,24 @@ template <class T> void *worker(void *args) {
 
 template <class T> Stats<T> run(Strategy<T> strat) {
   Stats<T> stats;
-  WorkQueue<T> work_queue = make_work_queue<T>(strat.num_cells);
 
+  // The work queue is what all the worker threads will checking
+  // for jobs
+  work_queue<T> queue = make_work_queue<T>(strat.num_cells);
+
+  // The actual cells. Woo!
   T cells[strat.num_cells];
 
   // Using a vector so I can use the make_heap, push_heap, etc.
-  vector<CellEntry<T>> cell_queue;
+  vector<cell_entry<T>> cell_queue;
   for (int i = 0; i < strat.num_cells; i++) {
     cells[i] = strat.make_default_cell();
     cell_queue.push_back({0, &cells[i], true});
   }
 
   bool stop_flag = false;
-  WorkerThreadArgs<T> args = {
-      .strat = strat, .queue = work_queue, .stop_flag = &stop_flag};
+  worker_thread_args<T> args = {
+      .strat = strat, .queue = queue, .stop_flag = &stop_flag};
 
   // spawn worker threads
   pthread_t threads[strat.num_threads];
@@ -157,28 +184,95 @@ template <class T> Stats<T> run(Strategy<T> strat) {
     pthread_create(&threads[i], NULL, worker<T>, (void *)args);
   }
 
-  for (int i = 0; i < strat.num_generations; i++) {
-    // generate fitness jobs
-    if (strat.test_all) {
+  uint64_t rand_state = strat.rand_seed;
 
-    } else {
+  for (int i = 0; i < strat.num_generations; i++) {
+    // Mutate some random cells in the population
+    for (int i = 0; i < cell_queue.size(); i++) {
+      if (abs(norm_rand(rand_state)) < strat.mutation_chance) {
+        queue.jobs[queue.write_i] = mutate_job<T>{&cell_queue[i]};
+        queue.write_i++;
+      }
     }
+    pthread_cond_broadcast(&queue.jobs_available_cond);
+
+    // Potential issue here where mutations aren't done computing and fitness
+    // jobs begin. maybe need to gate this.
+
+    // Generate fitness jobs
+    for (int i = 0; i < cell_queue.size(); i++) {
+      if (cell_queue[i].stale &&
+          (strat.test_all || abs(norm_rand(rand_state)) < strat.test_chance)) {
+        queue.jobs[queue.write_i] = fitness_job<T>{&cell_queue[i]};
+        queue.write_i++;
+      }
+      pthread_cond_broadcast(&queue.jobs_available_cond);
+    }
+    queue.done_writing = true;
 
     // wait for fitness jobs to complete
-    // sort cells on performance
+    pthread_mutex_lock(&queue.gen_complete_mutex);
+
+    // Before going to sleep, do a quick check to see if the fitness jobs are
+    // already complete.
+    pthread_mutex_lock(&queue.data_mutex);
+    bool already_complete = queue.read_i != queue.write_i;
+    pthread_mutex_unlock(&queue.data_mutex);
+    if (already_complete) {
+      pthread_mutex_unlock(&queue.gen_complete_mutex);
+    } else {
+      pthread_cond_wait(&queue.gen_complete_cond, &queue.gen_complete_mutex);
+    }
+
+    // Sort cells on performance
+    std::sort(cell_queue.begin(), cell_queue.end(),
+              [strat](cell_entry<T> a, cell_entry<T> b) {
+                return strat.higher_fitness_is_better ? a > b : a < b;
+              });
+
+    printf("Top Score: %f\n", cell_queue[0].score);
+
+    if (!strat.enable_crossover)
+      continue;
+
     // generate crossover jobs
+    // dear god. forgive me father
+    queue.write_i = 0;
+    queue.read_i = 0;
+    int count = 0;
+    int n_par = strat.crossover_parent_num;
+    int n_child = strat.crossover_children_num;
+    int child_i = cell_queue.size() - 1;
+    int par_i = 0;
+    while (child_i - par_i <= n_par + n_child) {
+      Array<cell_entry<T> *> parents = {
+          (cell_entry<T> **)malloc(sizeof(cell_entry<T> *) * n_par), n_par};
+      Array<cell_entry<T> *> children = {
+          (cell_entry<T> **)malloc(sizeof(cell_entry<T> *) * n_child), n_child};
+
+      for (; par_i < par_i + n_par; par_i++) {
+        parents[i] = cell_queue[par_i];
+      }
+
+      for (; child_i > child_i - n_child; child_i--) {
+        children[i] = cell_queue[child_i];
+      }
+
+      queue.jobs[queue.write_i] = crossover_job<T>{parents, children};
+      par_i += strat.crossover_parent_stride;
+      child_i += strat.crossover_children_stride;
+    }
   }
 
   // stop worker threads
   stop_flag = true;
-  pthread_cond_broadcast(work_queue.jobs_available_cond);
+  pthread_cond_broadcast(&queue.jobs_available_cond);
   for (int i = 0; i < strat.num_threads; i++) {
     pthread_join(threads[i], NULL);
   }
 }
 
-template <class T> T &Span<T>::operator[](int i) {
-  assert(i >= 0 && i < len);
+template <class T> T &Array<T>::operator[](int i) {
   return _data[i];
 }
 

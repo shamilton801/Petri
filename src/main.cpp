@@ -1,133 +1,81 @@
-#include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <cstdlib>
-#include <iostream>
-#include <vector>
+#include "genetic.h"
+#include "rand.h"
 
-#define MUTATION_CHANCE 1.0
+using namespace genetic;
 
-float norm_rand() { return (float)rand() / RAND_MAX; }
+const int len = 10;
+const float max_float = 9999.9f;
+static uint64_t seed = 12;
+static float num_mutate_chance = 0.5;
+static int num_parents = 2;
+static int num_children = 2;
 
-enum class ConstraintType {
-  PRODUCT = 0,
-  SUM = 1,
-  INDEX_EQ = 2,
-};
 
-struct Constraint {
-  ConstraintType type;
-  int optional_i;
-  float value;
-};
-static std::vector<Constraint> constraints;
+static int target_sum = 200;
+static int target_product = 300;
 
-struct Cell {
-  int n;
-  float *params;
-};
-
-Cell make_cell(int num_params) {
-  Cell res = {num_params, (float *)malloc(num_params * sizeof(float))};
-  for (int i = 0; i < num_params; i++) {
-    res.params[i] = 0;
-  }
-  return res;
+Array<float> make_new_arr() {
+    Array<float> arr = { (float*)malloc(sizeof(float)*len), len };
+    for (int i = 0; i < arr.len; i++) {
+        arr[i] = norm_rand(seed) * max_float;
+    }
+    return arr;
 }
 
-float get_cell_err(const Cell &a) {
-  float total_diff = 0;
-  for (auto c : constraints) {
-    switch (c.type) {
-    case ConstraintType::SUM: {
-      float sum = 0;
-      for (int i = 0; i < a.n; i++) {
-        sum += a.params[i];
-      }
-      total_diff += abs(c.value - sum);
-      break;
+void mutate(Array<float> &arr_to_mutate) {
+    for (int i = 0; i < len; i++) {
+        if (norm_rand(seed) < num_mutate_chance) {
+            arr_to_mutate[i] = norm_rand(seed) * max_float;
+        }
     }
-    case ConstraintType::PRODUCT: {
-      float prod = 1;
-      for (int i = 0; i < a.n; i++) {
-        prod *= a.params[i];
-      }
-      total_diff += abs(c.value - prod);
-      break;
-    }
-    case ConstraintType::INDEX_EQ: {
-      assert(c.optional_i < a.n);
-      total_diff += abs(c.value - a.params[c.optional_i]);
-      break;
-    }
-    }
-  }
-  return total_diff;
 }
 
-bool operator<(const Cell &a, const Cell &b) {
-  assert(a.n == b.n);
-  return get_cell_err(a) < get_cell_err(b);
+void crossover(const Array<Array<float>*> parents, const Array<Array<float> *> out_children) {
+    for (int i = 0; i < len; i++) {
+        (*out_children._data[0])[i] = i < len/2 ? (*parents._data[0])[i] : (*parents._data[1])[i];
+        (*out_children._data[1])[i] = i < len/2 ? (*parents._data[1])[i] : (*parents._data[0])[i];
+    }
 }
 
-void combine_cells(const Cell &a, const Cell &b, Cell *child) {
-  bool a_first = norm_rand() > 0.5f;
-  for (int i = 0; i < a.n; i++) {
-    float offset = norm_rand() * 10;
-    float roll = norm_rand();
-    if (a_first) {
-      child->params[i] = (i < a.n / 2 ? a.params[i] : b.params[i]) +
-                         (roll > 0.5 ? offset : -offset);
-    } else {
-      child->params[i] = (i < a.n / 2 ? b.params[i] : a.params[i]) +
-                         (roll > 0.5 ? offset : -offset);
+// norm_rand can go negative. fix in genetic.cpp
+// child stride doesn't make sense. Should always skip over child num
+
+float fitness(const Array<float> &cell) {
+    float sum = 0;
+    float product = 1;
+    for (int i = 0; i < cell.len; i++) {
+        sum += cell._data[i];
+        product *= cell._data[i];
     }
-  }
-  float r = norm_rand();
-  child->params[(int)r * (a.n - 1)] = r * 100.0;
+    return abs(sum - target_sum) + abs(product - target_product);
 }
 
 int main(int argc, char **argv) {
-  int num_params, num_cells, num_generations, num_constraints = 0;
-  std::cin >> num_params >> num_cells >> num_generations >> num_constraints;
+    Strategy<Array<float>> strat {
+        .num_threads = 1,
+        .batch_size  = 1,
+        .num_cells   = 10,
+        .num_generations = 10,
+        .test_all = true,
+        .test_chance = 0.0, // doesn't matter
+        .enable_crossover = true,
+        .enable_crossover_mutation = true,
+        .crossover_mutation_chance = 0.6f,
+        .crossover_parent_num = 2,
+        .crossover_parent_stride = 1,
+        .crossover_children_num = 2,
+        .enable_mutation = true,
+        .mutation_chance = 0.8,
+        .rand_seed = seed,
+        .higher_fitness_is_better = false,
+        .make_default_cell=make_new_arr,
+        .mutate=mutate,
+        .crossover=crossover,
+        .fitness=fitness
+    };
 
-  std::cout << num_params << " " << num_cells << " " << num_generations << " "
-            << num_constraints << std::endl;
-
-  for (int i = 0; i < num_constraints; i++) {
-    int type_in, optional_i = 0;
-    float value;
-    std::cin >> type_in >> value;
-    ConstraintType type = static_cast<ConstraintType>(type_in);
-    if (type == ConstraintType::INDEX_EQ) {
-      std::cin >> optional_i;
-    }
-    constraints.push_back({type, optional_i, value});
-  }
-
-  std::vector<Cell> cells;
-  for (int i = 0; i < num_cells; i++) {
-    cells.push_back(make_cell(num_params));
-  }
-
-  for (int i = 0; i < num_generations; i++) {
-    std::sort(cells.begin(), cells.end());
-    for (int j = 0; j < num_cells / 2; j++) {
-      combine_cells(cells[j], cells[j + 1], &cells[num_cells / 2 + j]);
-    }
-    if (i % 1000 == 0) {
-      std::cout << i << "\t" << get_cell_err(cells[0]) << std::endl;
-    }
-  }
-  std::cout << "Final Answer: ";
-  float sum = 0;
-  float product = 1;
-  for (int i = 0; i < cells[0].n; i++) {
-    std::cout << cells[0].params[i] << " ";
-    sum += cells[0].params[i];
-    product *= cells[0].params[i];
-  }
-  std::cout << std::endl;
-
-  std::cout << "Sum: " << sum << std::endl;
-  std::cout << "Product: " << product << std::endl;
+    auto res = run(strat);
 }
